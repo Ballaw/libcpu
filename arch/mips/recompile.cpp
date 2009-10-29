@@ -382,7 +382,7 @@ int arch_mips_recompile_instr(uint8_t* RAM, addr_t pc, BasicBlock *bb_dispatch, 
 			case 0x24: /* INCPUS_AND */		LET32(RD,AND(R32(RS), R32(RT)));		break;
 			case 0x25: /* INCPUS_OR */		LET32(RD,OR(R32(RS), R32(RT)));		break;
 			case 0x26: /* INCPUS_XOR */		LET32(RD,XOR(R32(RS), R32(RT)));		break;
-			case 0x27: /* INCPUS_NOR */		LET32(RD,XOR(OR(R32(RS), R32(RT)),CONST32(-1)));	break;
+			case 0x27: /* INCPUS_NOR */		LET32(RD,XOR(OR(R32(RS), R32(RT)),CONST32((unsigned long)-1)));	break;
 			case 0x2A: /* INCPUS_SLT */		LET_ZEXT(RD,ICMP_SLT(R(RS),R(RT)));	break;
 			case 0x2B: /* INCPUS_SLTU */	LET_ZEXT(RD,ICMP_ULT(R(RS),R(RT)));	break;
 			case 0x2C: /* INCPUS_DADD */	LET(RD,ADD(R(RS), R(RT)));			break; //XXX same??
