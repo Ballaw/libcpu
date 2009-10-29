@@ -17,6 +17,9 @@
 #include "llvm/Target/TargetData.h"
 #include "llvm/ExecutionEngine/JIT.h"
 #include "llvm/LinkAllPasses.h"
+#include "llvm/Config/config.h"
+#include "llvm/Target/TargetSelect.h"
+
 
 #include "types.h"
 
@@ -68,6 +71,7 @@ typedef struct cpu {
 	uint32_t flags_arch;
 	uint32_t flags;
 	tagging_type_t *tagging_type; /* array of flags, one per byte of code */
+	LLVMContext *ctx;
 	Module *mod;
 	Function *func_jitmain;
 	ExecutionEngine *exec_engine;
@@ -115,5 +119,23 @@ void cpu_set_flags_arch(cpu_t *cpu, uint32_t f);
 void cpu_set_ram(uint8_t *RAM);
 void cpu_flush(cpu_t *cpu);
 void cpu_init(cpu_t *cpu);
+
+//////////////////////////////////////////////////////////////////////
+// LLVM Helpers
+//////////////////////////////////////////////////////////////////////
+
+#define CPU_CTX(c) (*(c)->ctx)
+#define BB_CTX(bb) ((bb)->getContext())
+
+#define cpu_getType(c, x) (Type::get##x(CPU_CTX(c)))
+#define bb_getType(bb, x) (Type::get##x(BB_CTX(bb)))
+
+#define cpu_getIntegerType(c, x) (IntegerType::get(CPU_CTX(c), x))
+#define bb_getIntegerType(bb, x) (IntegerType::get(BB_CTX(bb), x))
+
+#define cpu_getStructType(c, x, ...) (StructType::get(CPU_CTX(c), x, \
+						      #__VA_ARGS__))
+#define bb_getStructType(bb, x, ...) (StructType::get(BB_CTX(bb), x, \
+						      #__VA_ARGS__))
 
 #endif

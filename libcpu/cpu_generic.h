@@ -27,9 +27,13 @@ uint32_t RAM32BE(uint8_t *RAM, addr_t a);
 /*
  * a collection of preprocessor macros
  * that make the LLVM interface nicer
+ *
+ * XXX: HACK ALERT: Now CONST requires to have a valid BasicBlock bb
+ * defined in its scope. We should probably do something better about
+ * the LLVM2.6 FUBAR API Change.
  */
 
-#define CONSTs(s,v) ConstantInt::get(IntegerType::get(s), v)
+#define CONSTs(s,v) ConstantInt::get(bb_getIntegerType(bb, s), v)
 #define CONST8(v) CONSTs(8,v)
 #define CONST16(v) CONSTs(16,v)
 #define CONST32(v) CONSTs(32,v)
@@ -37,17 +41,17 @@ uint32_t RAM32BE(uint8_t *RAM, addr_t a);
 
 #define CONST(v) CONSTs(reg_size,v)
 
-#define TRUNC(s,v) new TruncInst(v, IntegerType::get(s), "", bb)
+#define TRUNC(s,v) new TruncInst(v, bb_getIntegerType(bb, s), "", bb)
 #define TRUNC8(v) TRUNC(8,v)
 #define TRUNC16(v) TRUNC(16,v)
 #define TRUNC32(v) TRUNC(32,v)
 
-#define ZEXT(s,v) new ZExtInst(v, IntegerType::get(s), "", bb)
+#define ZEXT(s,v) new ZExtInst(v, bb_getIntegerType(bb, s), "", bb)
 #define ZEXT8(v) ZEXT(8,v)
 #define ZEXT16(v) ZEXT(16,v)
 #define ZEXT32(v) ZEXT(32,v)
 
-#define SEXT(s,v) new SExtInst(v, IntegerType::get(s), "", bb)
+#define SEXT(s,v) new SExtInst(v, bb_getIntegerType(bb, s), "", bb)
 #define SEXT8(v) SEXT(8,v)
 #define SEXT16(v) SEXT(16,v)
 #define SEXT32(v) SEXT(32,v)
@@ -60,13 +64,13 @@ uint32_t RAM32BE(uint8_t *RAM, addr_t a);
 #define SHL(a,b) BinaryOperator::Create(Instruction::Shl, a, b, "", bb)
 #define LSHR(a,b) BinaryOperator::Create(Instruction::LShr, a, b, "", bb)
 #define ASHR(a,b) BinaryOperator::Create(Instruction::AShr, a, b, "", bb)
-#define ICMP_EQ(a,b) new ICmpInst(ICmpInst::ICMP_EQ, a, b, "", bb)
-#define ICMP_NE(a,b) new ICmpInst(ICmpInst::ICMP_NE, a, b, "", bb)
-#define ICMP_ULT(a,b) new ICmpInst(ICmpInst::ICMP_ULT, a, b, "", bb)
-#define ICMP_SLT(a,b) new ICmpInst(ICmpInst::ICMP_SLT, a, b, "", bb)
-#define ICMP_SGT(a,b) new ICmpInst(ICmpInst::ICMP_SGT, a, b, "", bb)
-#define ICMP_SGE(a,b) new ICmpInst(ICmpInst::ICMP_SGE, a, b, "", bb)
-#define ICMP_SLE(a,b) new ICmpInst(ICmpInst::ICMP_SLE, a, b, "", bb)
+#define ICMP_EQ(a,b) new ICmpInst(*bb, ICmpInst::ICMP_EQ, a, b, "")
+#define ICMP_NE(a,b) new ICmpInst(*bb, ICmpInst::ICMP_NE, a, b, "")
+#define ICMP_ULT(a,b) new ICmpInst(*bb, ICmpInst::ICMP_ULT, a, b, "")
+#define ICMP_SLT(a,b) new ICmpInst(*bb, ICmpInst::ICMP_SLT, a, b, "")
+#define ICMP_SGT(a,b) new ICmpInst(*bb, ICmpInst::ICMP_SGT, a, b, "")
+#define ICMP_SGE(a,b) new ICmpInst(*bb, ICmpInst::ICMP_SGE, a, b, "")
+#define ICMP_SLE(a,b) new ICmpInst(*bb, ICmpInst::ICMP_SLE, a, b, "")
 
 /* interface to the GPRs */
 #define R(i) arch_get_reg(i, 0, bb)
