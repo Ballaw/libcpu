@@ -1,47 +1,6 @@
 #include <libcpu.h>
 
-#include "arch/m68k/libcpu_m68k.h"
-
-#include <stdio.h>
-#include <stdlib.h>
-#include "types.h"
-#include "loader.h"
-
-uint32_t
-get32(FILE *f) {
-	return fgetc(f)<<24 | fgetc(f)<<16 | fgetc(f)<<8 | fgetc(f);
-}
-
-uint32_t
-load32(uint8_t * RAM, addr_t a) {
-	return ntohl(*(uint32_t*)&RAM[a]);
-}
-
-void
-store32(uint8_t * RAM, addr_t a, uint32_t b) {
-	*(uint32_t*)&RAM[a] = htonl(b);
-}
-
-/*
- * The AmigaOS/Tripos Hunk format consists of any number of code/data hunks,
- * and each hunk comes with relocation information directly after it. This is
- * a list of offsets and hunknumbers: The offset in this hunk has to be
- * patched with the address of one specific hunk. Since relocation information
- * is not stored at the end of the file after all hunks, if the file is read
- * sequentially, the load addresses of the other hunks are not known yet,
- * so it is necesary to do two passes over the file.
- */
-int
-load_code(char *filename, uint8_t *RAM, int ramsize, addr_t *s, addr_t *e, addr_t *entry) {
-	return 1;
-}
-
-#ifdef DEBUG_SYMBOLS
-const char*
-app_get_symbol_name(addr_t addr) {
-	return "";
-}
-#endif
+#include "arch/arm/libcpu_arm.h"
 
 //////////////////////////////////////////////////////////////////////
 // command line parsing helpers
@@ -98,7 +57,7 @@ asm("nop");
 
 static void
 debug_function(uint8_t *RAM, void *r) {
-	reg_m68k_t *reg = (reg_m68k_t*)r;
+//	reg_arm_t *reg = (reg_arm_t*)r;
 //	printf("DEBUG: $%04X: A=$%02X X=$%02X Y=$%02X S=$%02X P=$%02X %02X/%02X\n", reg->pc, reg->a, reg->x, reg->y, reg->s, reg->p, RAM[0x33], RAM[0x34]);
 //	{ int i; for (i=0x01F0; i<0x0200; i++) printf("%02X ", RAM[i]); printf("\n"); }
 }
@@ -111,16 +70,16 @@ main(int argc, char **argv) {
 	cpu_t *cpu;
 	uint8_t *RAM;
 
-	int ramsize = 16*1024*1024;
+	int ramsize = 65536;
 	RAM = (uint8_t*)malloc(ramsize);
-	if (!RAM) {
-		fprintf(stderr, "Cannot allocate RAM\n");
-		return 1;
-	}
 
-	cpu = cpu_new(CPU_ARCH_M68K);
-	// cpu_set_flags_optimize(cpu, CPU_OPTIMIZE_ALL);
+	cpu = cpu_new(CPU_ARCH_ARM);
+	cpu_set_flags_optimize(cpu, CPU_OPTIMIZE_ALL);
 	cpu_set_flags_debug(cpu, CPU_DEBUG_NONE);
+//	cpu_set_flags_arch(cpu, 
+//		CPU_6502_BRK_TRAP |
+//		CPU_6502_XXX_TRAP |
+//		CPU_6502_V_IGNORE);
 	cpu_set_ram(RAM);
 
 	cpu_init(cpu);
@@ -141,14 +100,16 @@ main(int argc, char **argv) {
 
 	FILE *f;
 
-	cpu->code_entry = (addr_t)LdrLoadMachO(executable, 0, (char*)RAM);
-	cpu->code_start = 0;
-	cpu->code_end = cpu->code_start + 16*1024*1024;  // fread(&RAM[cpu->code_start], 1, ramsize-cpu->code_start, f);
-
-	if (!cpu->code_entry) {
-		fprintf(stderr, "Cannot find Mach-O entry point\n");
-		return 1;
+	if (!(f = fopen(executable, "rb"))) {
+		printf("Could not open %s!\n", executable);
+		return 2;
 	}
+
+	cpu->code_start = 0;
+	cpu->code_end = cpu->code_start + fread(&RAM[cpu->code_start], 1, ramsize-cpu->code_start, f);
+	fclose(f);
+
+	cpu->code_entry = cpu->code_start;
 
 	cpu_tag(cpu, cpu->code_entry);
 
@@ -161,12 +122,12 @@ main(int argc, char **argv) {
 	find_rets(RAM, cpu->code_start, cpu->code_end);
 #endif
 
-	printf("*** Executing... %lx\n", (unsigned long)cpu->code_entry);
+	printf("*** Executing...\n");
 
-#define PC (((reg_m68k_t*)cpu->reg)->pc)
+#define PC (((reg_arm_t*)cpu->reg)->pc)
+#define R (((reg_arm_t*)cpu->reg)->r)
 
 	PC = cpu->code_entry;
-	// S = 0xFF;
 
 	for(;;) {
 		breakpoint();
@@ -178,24 +139,8 @@ main(int argc, char **argv) {
 			case JIT_RETURN_FUNCNOTFOUND:
 //				printf("LIB: $%04X: A=$%02X X=$%02X Y=$%02X S=$%02X P=$%02X\n", pc, a, x, y, s, p);
 
-#if 0
-				if (kernal_dispatch(RAM, &PC, &A, &X, &Y, &S, &P)) {
-					// the runtime could handle it, so do an RTS
-					PC = RAM[0x0100+(++(S))];
-					PC |= (RAM[0x0100+(++(S))]<<8);
-					PC++;
-					continue;
-				}
-#endif
-				
-				// maybe it's a JMP in RAM: interpret it
-				if (RAM[PC]==0x4C) {
-					PC = RAM[PC+1] | RAM[PC+2]<<8;
-					continue;
-				}
-
 				// bad :(
-				printf("%s: error: $%08X not found!\n", __func__, PC);
+				printf("%s: error: $%04X not found!\n", __func__, PC);
 				int i;
 				printf("PC: ");
 				for (i=0; i<16; i++)

@@ -213,12 +213,14 @@ void LdrFakeDyld(struct segment_command *segment_command, void *buf, struct nlis
 
 				uint32_t *dyld_func_lookup = (uint32_t*)my_malloc(5*sizeof(uint32_t));
 				dyld_func_lookup[0] = BE32_toHost(0x38600000);   // OpCode li r3, 0x0
-				dyld_func_lookup[1] = BE32_toHost(0x3c630000 | (((uint32_t)noopfunc & 0xFFFF0000)>>16));   // OpCode addis r3, r3, hi16(noopfunc)
-				dyld_func_lookup[2] = BE32_toHost(0x60630000 | ((uint32_t)noopfunc & 0x0000FFFF));   // OpCode ori r3, r3, lo16(noopfunc)
+				//XXX potential bit loss for 64 bit?
+				dyld_func_lookup[1] = BE32_toHost(0x3c630000 | (((uintptr_t)noopfunc & 0xFFFF0000)>>16));   // OpCode addis r3, r3, hi16(noopfunc)
+				dyld_func_lookup[2] = BE32_toHost(0x60630000 | ((uintptr_t)noopfunc & 0x0000FFFF));   // OpCode ori r3, r3, lo16(noopfunc)
 				dyld_func_lookup[3] = BE32_toHost(0x90640000);   // OpCode stw r3, 0x0(r4)
 				dyld_func_lookup[4] = BE32_toHost(0x4e800020);   // OpCode blr
 
-				*((uint32_t*)&(((unsigned char*)buf)[current_sect->addr+0x4])) = BE32_toHost((uint32_t)dyld_func_lookup);
+				//XXX potential bit loss for 64 bit?
+				*((uint32_t*)&(((unsigned char*)buf)[current_sect->addr+0x4])) = BE32_toHost((uintptr_t)dyld_func_lookup);
 			}
 			
 			if(strcmp(current_sect->sectname, "__data")==0) {
@@ -588,7 +590,7 @@ int LdrLoadDylib (struct dylib_command *dylib_command, void **buf, unsigned long
 		/* We'll go thorugh the load commands and try to handle them */
 		switch(BE32_toHost(current_cmd->cmd)) {
 			case LC_SEGMENT:
-				fprintf(stderr, "LC_SEGMENT: %p %d\n", current_cmd, buflen);
+				fprintf(stderr, "LC_SEGMENT: %p %ld\n", current_cmd, *buflen);
 				if(!LdrLoadSegment((struct segment_command*)current_cmd, buf, buflen, dylibfile, libfp, liboffset))
 					return 0;				
 				break;
@@ -666,8 +668,8 @@ int LdrLoadSegment(struct segment_command *segment_command, void **buf, unsigned
 	segment_command->vmaddr += reloffset;
 
 	debug_printf("segname: %s\n", segment_command->segname);
-	debug_printf("vmaddr: %#lx\n", segment_command->vmaddr);
-	debug_printf("vmsize: %#lx\n", segment_command->vmsize);
+	debug_printf("vmaddr: %#x\n", segment_command->vmaddr);
+	debug_printf("vmsize: %#x\n", segment_command->vmsize);
 
 	/* Check if vmaddr + vmsize exceed the space allocated by spMemInit() */
 #if 0
@@ -826,7 +828,7 @@ int LdrGetMachHeader(struct mach_header *mach_header, unsigned long offset, FILE
 }
 
 /* Append a function symbol to the List */
-void LdrLLLibFunctionsAppend(char *name, unsigned long offset) {
+void LdrLLLibFunctionsAppend(const char *name, unsigned long offset) {
 
 	LdrLLFunctions *newelem = (LdrLLFunctions*) my_malloc(sizeof(LdrLLFunctions));
 	// debug_printf("newelem my_malloced at %#lx\n", newelem);
