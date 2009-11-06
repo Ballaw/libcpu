@@ -83,7 +83,7 @@ RAM32BE(uint8_t *RAM, addr_t a) {
 static Value *
 arch_gep32(Value *a, BasicBlock *bb) {
 	a = GetElementPtrInst::Create(ptr_RAM, a, "", bb);
-	return new BitCastInst(a, PointerType::get(bb_getType(bb, Int32Ty), 0), "", bb);
+	return new BitCastInst(a, PointerType::get(getType(Int32Ty), 0), "", bb);
 }
 
 /* load 32 bit ALIGNED value from RAM */

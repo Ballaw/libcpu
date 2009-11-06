@@ -250,7 +250,7 @@ arch_mips_get_imm(uint32_t instr, uint32_t bits, bool sext, BasicBlock *bb) {
 	else
 		imm = (uint64_t)(uint16_t)GetImmediate;
 
-	return ConstantInt::get(bb_getIntegerType(bb, bits? bits : reg_size), imm);
+	return ConstantInt::get(getIntegerType(bits? bits : reg_size), imm);
 }
 
 #define IMM arch_mips_get_imm(instr, 0, true, bb)
@@ -261,7 +261,7 @@ arch_mips_get_imm(uint32_t instr, uint32_t bits, bool sext, BasicBlock *bb) {
 
 Value *
 arch_mips_get_sa(uint32_t instr, uint32_t bits, BasicBlock *bb) {
-	return ConstantInt::get(bb_getIntegerType(bb, bits? bits : reg_size), GetSA);
+	return ConstantInt::get(getIntegerType(bits? bits : reg_size), GetSA);
 }
 
 #define SA arch_mips_get_sa(instr, 0, bb)

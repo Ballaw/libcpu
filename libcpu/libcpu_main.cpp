@@ -89,8 +89,7 @@ cpu_new(cpu_arch_t arch)
 
 	cpu->fp = NULL;
 	cpu->reg = NULL;
-	cpu->ctx = new LLVMContext;
-	cpu->mod = new Module(cpu->name, *cpu->ctx);
+	cpu->mod = new Module(cpu->name, _CTX());
 	cpu->exec_engine = ExecutionEngine::create(cpu->mod);
 
 //	cpu->mod->setDataLayout("e-p:32:32:32-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:32:64-f32:32:32-f64:32:64-v64:64:64-v128:128:128-a0:0:64-f80:32:32");
@@ -388,10 +387,10 @@ optimize(cpu_t *cpu) {
 }
 
 BasicBlock *
-create_basicblock(cpu_t *cpu, addr_t addr, Function *f) {
+create_basicblock(addr_t addr, Function *f) {
 	char label[17];
 	snprintf(label, sizeof(label), "%c%08llx", LABEL_PREFIX, (unsigned long long)addr);
-	return BasicBlock::Create(*cpu->ctx, label, f, 0);
+	return BasicBlock::Create(_CTX(), label, f, 0);
 }
 
 static BasicBlock *
@@ -404,7 +403,7 @@ cpu_recompile(cpu_t *cpu, BasicBlock *bb_ret)
 	while (pc<cpu->code_end) {
 		//printf("%04X: %d\n", pc, get_tagging_type(cpu, pc));
 		if (get_tagging_type(cpu, pc) & (TYPE_CODE_TARGET|TYPE_ENTRY|TYPE_AFTER_CALL|TYPE_AFTER_BRANCH)) {
-			create_basicblock(cpu, pc, func_jitmain);
+			create_basicblock(pc, func_jitmain);
 			bbs++;
 		}
 
@@ -413,14 +412,14 @@ cpu_recompile(cpu_t *cpu, BasicBlock *bb_ret)
 	printf("bbs: %d\n", bbs);
 
 	// create dispatch basicblock
-	BasicBlock* bb_dispatch = BasicBlock::Create(*cpu->ctx, "dispatch",func_jitmain,0);  
+	BasicBlock* bb_dispatch = BasicBlock::Create(_CTX(), "dispatch",func_jitmain,0);  
 	Value *v_pc = new LoadInst(ptr_PC, "", false, bb_dispatch);
 	SwitchInst* sw = SwitchInst::Create(v_pc, bb_ret, bbs /*XXX wrong!*/, bb_dispatch);
 
 	for (pc = cpu->code_start; pc<cpu->code_end; pc++) {
 		if (get_tagging_type(cpu, pc) & (TYPE_ENTRY|TYPE_AFTER_CALL)) {
 			printf("info: adding case: %llx\n", pc);
-			ConstantInt* c = ConstantInt::get(cpu_getIntegerType(cpu, cpu->pc_width), pc);
+			ConstantInt* c = ConstantInt::get(getIntegerType(cpu->pc_width), pc);
 			BasicBlock *target = (BasicBlock*)lookup_basicblock(func_jitmain, pc);
 			if (!target) {
 				printf("error: unknown rts target $%04llx!\n", (unsigned long long)pc);
@@ -474,7 +473,7 @@ printf("basicblock: %04llx\n", (unsigned long long)pc);
 void
 emit_store_pc(cpu_t *cpu, BasicBlock *bb_branch, addr_t new_pc)
 {
-	Value *v_pc = ConstantInt::get(cpu_getIntegerType(cpu, cpu->pc_width), new_pc);
+	Value *v_pc = ConstantInt::get(getIntegerType(cpu->pc_width), new_pc);
 	new StoreInst(v_pc, ptr_PC, bb_branch);
 }
 
@@ -488,7 +487,7 @@ emit_store_pc_return(cpu_t *cpu, BasicBlock *bb_branch, addr_t new_pc, BasicBloc
 void
 create_singlestep_return_basicblock(cpu_t *cpu, addr_t new_pc, BasicBlock *bb_ret)
 {
-	BasicBlock *bb_branch = create_basicblock(cpu, new_pc, cpu->func_jitmain);
+	BasicBlock *bb_branch = create_basicblock(new_pc, cpu->func_jitmain);
 	emit_store_pc_return(cpu, bb_branch, new_pc, bb_ret);
 }
 
@@ -500,7 +499,7 @@ cpu_recompile_singlestep(cpu_t *cpu, BasicBlock *bb_ret)
 	int flow_type;
 	addr_t pc = cpu->f.get_pc(cpu->reg);
 
-	BasicBlock *cur_bb = BasicBlock::Create(*cpu->ctx, "instruction", func_jitmain, 0);
+	BasicBlock *cur_bb = BasicBlock::Create(_CTX(), "instruction", func_jitmain, 0);
 
 	disasm_instr(cpu, pc);
 
@@ -537,17 +536,17 @@ get_struct_reg(cpu_t *cpu) {
 	std::vector<const Type*>type_struct_reg_t_fields;
 
 	for (uint32_t i = 0; i < cpu->count_regs_i8; i++) /* 8 bit registers */
-		type_struct_reg_t_fields.push_back(cpu_getIntegerType(cpu, 8));
+		type_struct_reg_t_fields.push_back(getIntegerType(8));
 	for (uint32_t i = 0; i < cpu->count_regs_i16; i++) /* 8 bit registers */
-		type_struct_reg_t_fields.push_back(cpu_getIntegerType(cpu, 16));
+		type_struct_reg_t_fields.push_back(getIntegerType(16));
 	for (uint32_t i = 0; i < cpu->count_regs_i32; i++) /* 8 bit registers */
-		type_struct_reg_t_fields.push_back(cpu_getIntegerType(cpu, 32));
+		type_struct_reg_t_fields.push_back(getIntegerType(32));
 	for (uint32_t i = 0; i < cpu->count_regs_i64; i++) /* 8 bit registers */
-		type_struct_reg_t_fields.push_back(cpu_getIntegerType(cpu, 64));
+		type_struct_reg_t_fields.push_back(getIntegerType(64));
 
-	type_struct_reg_t_fields.push_back(cpu_getIntegerType(cpu, cpu->pc_width)); /* PC */
+	type_struct_reg_t_fields.push_back(getIntegerType(cpu->pc_width)); /* PC */
 
-	return cpu_getStructType(cpu, type_struct_reg_t_fields, /*isPacked=*/false);
+	return getStructType(type_struct_reg_t_fields, /*isPacked=*/false);
 }
 
 static Function*
@@ -562,15 +561,15 @@ cpu_create_function(cpu_t *cpu)
 	// - struct reg *
 	PointerType *type_pstruct_reg_t = PointerType::get(type_struct_reg_t, 0);
 	// - uint8_t *
-	PointerType *type_pi8 = PointerType::get(cpu_getIntegerType(cpu, 8), 0);
+	PointerType *type_pi8 = PointerType::get(getIntegerType(8), 0);
 	// - (*f)(uint8_t *, reg_t *) [debug_function() function pointer]
 	std::vector<const Type*>type_func_callout_args;
 	type_func_callout_args.push_back(type_pi8);				/* uint8_t *RAM */
 	type_func_callout_args.push_back(type_pstruct_reg_t);	/* reg_t *reg */
 	FunctionType *type_func_callout = FunctionType::get(
-		cpu_getType(cpu, VoidTy),			/* Result */
+		getType(VoidTy),	/* Result */
 		type_func_callout_args,	/* Params */
-		false);					/* isVarArg */
+		false);		      	/* isVarArg */
 	type_pfunc_callout = PointerType::get(type_func_callout, 0);
 
 	// - (*f)(uint8_t *, reg_t *, (*)(...)) [jitmain() function pointer)
@@ -579,7 +578,7 @@ cpu_create_function(cpu_t *cpu)
 	type_func_jitmain_args.push_back(type_pstruct_reg_t);	/* reg_t *reg */
 	type_func_jitmain_args.push_back(type_pfunc_callout);	/* (*debug)(...) */
 	FunctionType* type_func_jitmain = FunctionType::get(
-		cpu_getIntegerType(cpu, 32),	/* Result */
+		getIntegerType(32),		/* Result */
 		type_func_jitmain_args,		/* Params */
 		false);						/* isVarArg */
 
@@ -606,8 +605,8 @@ cpu_create_function(cpu_t *cpu)
 
 Value *
 get_struct_member_pointer(Value *s, int index, BasicBlock *bb) {
-	ConstantInt* const_0 = ConstantInt::get(bb_getType(bb, Int32Ty), 0);
-	ConstantInt* const_index = ConstantInt::get(bb_getType(bb, Int32Ty), index);
+	ConstantInt* const_0 = ConstantInt::get(getType(Int32Ty), 0);
+	ConstantInt* const_index = ConstantInt::get(getType(Int32Ty), index);
 
 	std::vector<Value*> ptr_11_indices;
 	ptr_11_indices.push_back(const_0);
@@ -621,7 +620,7 @@ emit_decode_reg_helper(int count, int width, Value **in_ptr_r, Value **ptr_r, Ba
 	// decode struct reg and copy the registers into local variables
 	for (int i = 0; i < count; i++) {
 		in_ptr_r[i] = get_struct_member_pointer(ptr_reg, i, bb);
-		ptr_r[i] = new AllocaInst(bb_getIntegerType(bb, width), "", bb);
+		ptr_r[i] = new AllocaInst(getIntegerType(width), "", bb);
 		LoadInst* v = new LoadInst(in_ptr_r[i], "", false, bb);
 		new StoreInst(v, ptr_r[i], false, bb);
 	}
@@ -690,7 +689,7 @@ cpu_recompile_function(cpu_t *cpu)
 	ptr_func_debug->setName("debug");
 
 	// entry basicblock
-	BasicBlock *label_entry = BasicBlock::Create(*cpu->ctx, "entry",func_jitmain,0);
+	BasicBlock *label_entry = BasicBlock::Create(_CTX(), "entry",func_jitmain,0);
 	emit_decode_reg(cpu, label_entry);
 
 #if 0 // bad for debugging, minimal speedup
@@ -700,9 +699,9 @@ cpu_recompile_function(cpu_t *cpu)
 #endif
 
 	// create ret basicblock
-	BasicBlock *bb_ret = BasicBlock::Create(*cpu->ctx, "ret",func_jitmain,0);  
+	BasicBlock *bb_ret = BasicBlock::Create(_CTX(), "ret",func_jitmain,0);  
 	spill_reg_state(cpu, bb_ret);
-	ReturnInst::Create(*cpu->ctx, ConstantInt::get(cpu_getType(cpu, Int32Ty), JIT_RETURN_FUNCNOTFOUND), bb_ret);
+	ReturnInst::Create(_CTX(), ConstantInt::get(getType(Int32Ty), JIT_RETURN_FUNCNOTFOUND), bb_ret);
 
 	BasicBlock *bb_start;
 	if (cpu->flags_debug & CPU_DEBUG_SINGLESTEP) {

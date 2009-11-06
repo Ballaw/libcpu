@@ -57,6 +57,7 @@ typedef uint8_t tagging_type_t;
 typedef struct cpu {
 	cpu_arch_t arch;
 	arch_func_t f;
+	uint16_t pc_offset;
 	uint32_t pc_width;
 	uint32_t count_regs_i8;
 	uint32_t count_regs_i16;
@@ -71,7 +72,6 @@ typedef struct cpu {
 	uint32_t flags_arch;
 	uint32_t flags;
 	tagging_type_t *tagging_type; /* array of flags, one per byte of code */
-	LLVMContext *ctx;
 	Module *mod;
 	Function *func_jitmain;
 	ExecutionEngine *exec_engine;
@@ -124,18 +124,9 @@ void cpu_init(cpu_t *cpu);
 // LLVM Helpers
 //////////////////////////////////////////////////////////////////////
 
-#define CPU_CTX(c) (*(c)->ctx)
-#define BB_CTX(bb) ((bb)->getContext())
-
-#define cpu_getType(c, x) (Type::get##x(CPU_CTX(c)))
-#define bb_getType(bb, x) (Type::get##x(BB_CTX(bb)))
-
-#define cpu_getIntegerType(c, x) (IntegerType::get(CPU_CTX(c), x))
-#define bb_getIntegerType(bb, x) (IntegerType::get(BB_CTX(bb), x))
-
-#define cpu_getStructType(c, x, ...) (StructType::get(CPU_CTX(c), x, \
-						      #__VA_ARGS__))
-#define bb_getStructType(bb, x, ...) (StructType::get(BB_CTX(bb), x, \
-						      #__VA_ARGS__))
-
+#define _CTX() getGlobalContext()
+#define getType(x) (Type::get##x(_CTX()))
+#define getIntegerType(x) (IntegerType::get(_CTX(), x))
+#define getStructType(x, ...) (StructType::get(_CTX(), x,    \
+					       #__VA_ARGS__))
 #endif
