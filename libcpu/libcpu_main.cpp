@@ -554,7 +554,7 @@ get_struct_reg(cpu_t *cpu) {
 
 	type_struct_reg_t_fields.push_back(getIntegerType(cpu->pc_width)); /* PC */
 
-	return getStructType(type_struct_reg_t_fields, /*isPacked=*/false);
+	return getStructType(type_struct_reg_t_fields, /*isPacked=*/true);
 }
 
 static Function*
