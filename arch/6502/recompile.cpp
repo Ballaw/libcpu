@@ -721,6 +721,8 @@ arch_6502_init(cpu_t *cpu)
 	cpu->count_regs_i16 = 0;
 	cpu->count_regs_i32 = 0;
 	cpu->count_regs_i64 = 0;
+
+	assert(offsetof(reg_6502_t, pc) == 5);
 }
 
 void
