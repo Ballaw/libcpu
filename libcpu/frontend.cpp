@@ -315,6 +315,8 @@ arch_sqrt(cpu_t *cpu, size_t width, Value *v, BasicBlock *bb) {
 void
 arch_debug_me(cpu_t *cpu, BasicBlock *bb)
 {
+	/* XXX: GIANL: XXX: debug still not supported. */
+	return;
 	if (cpu->ptr_func_debug == NULL)
 		return;
 

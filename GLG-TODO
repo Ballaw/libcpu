@@ -1,0 +1,5 @@
+FIFO order.
+
+- invoke in dispatch basic block to let unwind actually work.
+- support multiple functions (this makes current branch very broken)
+- just because I'm italian doesn't mean I can keep this spaghetti code. [Clean it up!]

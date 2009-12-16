@@ -15,19 +15,20 @@
  */
 BasicBlock *
 translate_instr(cpu_t *cpu, addr_t pc, tag_t tag,
-	BasicBlock *bb_target,	/* target for branch/call/rey */
+	BasicBlock *bb_target,	/* target for branch/call/ret */
 	BasicBlock *bb_trap,	/* target for trap */
 	BasicBlock *bb_next,	/* non-taken for conditional */
-	BasicBlock *cur_bb)
+	BasicBlock *cur_bb,
+	Function *cur_func)
 {
 	BasicBlock *bb_cond = NULL;
 	BasicBlock *bb_delay = NULL;
 
 	/* create internal basic blocks if needed */
 	if (tag & TAG_CONDITIONAL)
-		bb_cond = create_basicblock(cpu, pc, cpu->cur_func, BB_TYPE_COND);
+		bb_cond = create_basicblock(cpu, pc, cur_func, BB_TYPE_COND);
 	if ((tag & TAG_DELAY_SLOT) && (tag & TAG_CONDITIONAL))
-		bb_delay = create_basicblock(cpu, pc, cpu->cur_func, BB_TYPE_DELAY);
+		bb_delay = create_basicblock(cpu, pc, cur_func, BB_TYPE_DELAY);
 
 	/* special case: delay slot */
 	if (tag & TAG_DELAY_SLOT) {

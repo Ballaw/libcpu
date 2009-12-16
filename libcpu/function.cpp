@@ -145,7 +145,7 @@ emit_decode_fp_reg_helper(cpu_t *cpu, uint32_t count, uint32_t width,
 #endif
 }
 
-static void
+void
 emit_decode_reg(cpu_t *cpu, BasicBlock *bb)
 {
 	// GPRs
@@ -209,7 +209,7 @@ spill_fp_reg_state_helper(cpu_t *cpu, uint32_t count, uint32_t width,
 #endif
 }
 
-static void
+void
 spill_reg_state(cpu_t *cpu, BasicBlock *bb)
 {
 	// frontend specific part.
@@ -302,8 +302,11 @@ cpu_create_function(cpu_t *cpu, const char *name,
 	cpu->ptr_func_debug = args++;
 	cpu->ptr_func_debug->setName("debug");
 
+	Value *G_RAM = new GlobalVariable(*cpu->mod, type_pi8, false, GlobalValue::ExternalLinkage, ConstantExpr::getCast(Instruction::IntToPtr, ConstantInt::get(getType(Int64Ty), (uint64_t)(long)cpu->RAM), type_pi8), "G_RAM");
+
 	// entry basicblock
 	BasicBlock *label_entry = BasicBlock::Create(_CTX(), "entry", func, 0);
+	new StoreInst(cpu->ptr_RAM, G_RAM, label_entry);
 	emit_decode_reg(cpu, label_entry);
 
 	// create exit code

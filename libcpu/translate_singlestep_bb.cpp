@@ -47,7 +47,7 @@ cpu_translate_singlestep_bb(cpu_t *cpu, BasicBlock *bb_ret, BasicBlock *bb_trap)
 		if (tag & TAG_CONDITIONAL)
 			bb_next = create_singlestep_return_basicblock(cpu, next_pc, bb_ret);
 
-		bb_cont = translate_instr(cpu, pc, tag, bb_target, bb_trap, bb_next, cur_bb);
+		bb_cont = translate_instr(cpu, pc, tag, bb_target, bb_trap, bb_next, cur_bb, cpu->cur_func);
 
 		pc = next_pc;
 		
