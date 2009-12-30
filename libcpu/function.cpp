@@ -6,67 +6,12 @@
  */
 
 #include "libcpu.h"
+#include "basicblock.h"
+#include "function.h"
 
 //////////////////////////////////////////////////////////////////////
-// function
+// Reg helpers.
 //////////////////////////////////////////////////////////////////////
-
-static StructType *
-get_struct_reg(cpu_t *cpu) {
-	std::vector<const Type*>type_struct_reg_t_fields;
-
-	uint32_t count, size;
-	
-	// GPRs
-	count = cpu->info.register_count[CPU_REG_GPR];
-	size  = cpu->info.register_size[CPU_REG_GPR];
-	for (uint32_t n = 0; n < count; n++)
-		type_struct_reg_t_fields.push_back(getIntegerType(size));
-
-	// XRs
-	count = cpu->info.register_count[CPU_REG_XR];
-	size  = cpu->info.register_size[CPU_REG_XR];
-	for (uint32_t n = 0; n < count; n++)
-		type_struct_reg_t_fields.push_back(getIntegerType(size));
-
-//	type_struct_reg_t_fields.push_back(getIntegerType(cpu->info.address_size)); /* PC */
-
-	return getStructType(type_struct_reg_t_fields, /*isPacked=*/true);
-}
-
-static StructType *
-get_struct_fp_reg(cpu_t *cpu) {
-	std::vector<const Type*>type_struct_fp_reg_t_fields;
-
-	uint32_t count, size;
-
-	count = cpu->info.register_count[CPU_REG_FPR];
-	size  = cpu->info.register_size[CPU_REG_FPR];
-	for (uint32_t n = 0; n < count; n++) {
-		if (size == 80) {
-			if ((cpu->flags & CPU_FLAG_FP80) == 0) {
-				/* two 64bits words hold the data */
-				type_struct_fp_reg_t_fields.push_back(getIntegerType(64));
-				type_struct_fp_reg_t_fields.push_back(getIntegerType(64));
-			} else {
-				// XXX ensure it is aligned to 16byte boundary!
-				type_struct_fp_reg_t_fields.push_back(getFloatType(80));
-			}
-		} else if (size == 128) {
-			if ((cpu->flags & CPU_FLAG_FP128) == 0) {
-				/* two 64bits words hold the data */
-				type_struct_fp_reg_t_fields.push_back(getIntegerType(64));
-				type_struct_fp_reg_t_fields.push_back(getIntegerType(64));
-			} else {
-				type_struct_fp_reg_t_fields.push_back(getFloatType(128));
-			}
-		} else {
-			type_struct_fp_reg_t_fields.push_back(getFloatType(size));
-		}
-	}
-
-	return getStructType(type_struct_fp_reg_t_fields, /*isPacked=*/true);
-}
 
 static Value *
 get_struct_member_pointer(Value *s, int index, BasicBlock *bb) {
@@ -145,7 +90,17 @@ emit_decode_fp_reg_helper(cpu_t *cpu, uint32_t count, uint32_t width,
 #endif
 }
 
-void
+static void
+emit_decode_pc(cpu_t *cpu, BasicBlock *bb)
+{
+	// PC pointer.
+	Type const *intptr_type = cpu->exec_engine->getTargetData()->getIntPtrType(_CTX());
+	Constant *v_pc = ConstantInt::get(intptr_type, (uintptr_t)cpu->rf.pc);
+	cpu->ptr_PC = ConstantExpr::getIntToPtr(v_pc, PointerType::getUnqual(getIntegerType(cpu->info.address_size)));
+	cpu->ptr_PC->setName("pc");
+}
+
+static void
 emit_decode_reg(cpu_t *cpu, BasicBlock *bb)
 {
 	// GPRs
@@ -230,56 +185,177 @@ spill_reg_state(cpu_t *cpu, BasicBlock *bb)
 		cpu->ptr_fpr, bb);
 }
 
-Function*
-cpu_create_function(cpu_t *cpu, const char *name,
-	BasicBlock **p_bb_ret,
-	BasicBlock **p_bb_trap,
-	BasicBlock **p_label_entry)
+//////////////////////////////////////////////////////////////////////
+// GuestBB functions.
+//////////////////////////////////////////////////////////////////////
+
+static BasicBlock *
+create_bb_ret(cpu_t *cpu, Function *f, bool spill)
+{
+	BasicBlock *bb = BasicBlock::Create(_CTX(), "dispatch", f, 0);
+	if (spill)
+	  spill_reg_state(cpu, bb);
+	ReturnInst::Create(_CTX(), bb);
+	return bb;
+}
+
+static BasicBlock *
+create_bb_unwind(cpu_t *cpu, Function *f)
+{
+	BasicBlock *bb = BasicBlock::Create(_CTX(), "trap", f, 0);
+	spill_reg_state(cpu, bb);
+	new UnwindInst(_CTX(), bb);
+	return bb;
+}
+
+#define GBBF_PRFX "GF_"
+#define GBBF_SZ 20
+
+static inline void
+_pc_to_function_name(addr_t pc, char *sym)
+{
+	snprintf(sym, GBBF_SZ, GBBF_PRFX"%08llx",
+		 (unsigned long long)pc);
+}
+
+Function *
+cpu_create_guestbb(cpu_t *cpu, addr_t pc)
+{
+	Function *f;
+	char sym[GBBF_SZ];
+	const FunctionType *fty = cast_or_null<FunctionType>(cpu->mod->getTypeByName("func.gbb"));
+
+	_pc_to_function_name(pc, sym);
+	f = Function::Create(fty, GlobalValue::ExternalLinkage, sym, cpu->mod);
+	f->setCallingConv(CallingConv::C);
+	return f;
+}
+
+Function *
+cpu_get_guestbb(cpu_t *cpu, addr_t pc)
+{
+	char sym[GBBF_SZ];
+
+	_pc_to_function_name(pc, sym);
+	
+	/* An array map is faster, but we definitely want LLVM
+	 * to use the SymbolResolver, so that we can have more power
+	 * by implementing a custom one. */
+	return cpu->mod->getFunction(sym);
+}
+
+Function *
+cpu_setup_guestbb(cpu_t *cpu, addr_t pc, BasicBlock **cur_bb, BasicBlock **bb_dispatch, BasicBlock **bb_trap)
+{
+	Value *v;
+	BasicBlock *bb;
+	Function::arg_iterator args;
+	Function *f = cpu_get_guestbb(cpu, pc);
+	bb = BasicBlock::Create(_CTX(), "entry", f, 0);
+
+	args = f->arg_begin();
+	cpu->ptr_grf = args++;
+	cpu->ptr_grf->setName("ptr_grf");
+	cpu->ptr_frf = args++;
+	cpu->ptr_frf->setName("ptr_frf");
+	
+	v = cpu->mod->getGlobalVariable("G_RAM");
+	v = GetElementPtrInst::Create(v, ConstantInt::get(getIntegerType(32), 0), "", bb);
+	cpu->ptr_RAM = new LoadInst(v, "", false, bb);
+	cpu->ptr_RAM->setName("ptr_RAM");
+
+	emit_decode_reg(cpu, bb);
+	
+	*cur_bb = bb;
+	*bb_dispatch = create_bb_ret(cpu, f, true);
+	*bb_trap = create_bb_unwind(cpu, f);
+	return f;
+}
+
+//////////////////////////////////////////////////////////////////////
+// Dispatch function.
+//////////////////////////////////////////////////////////////////////
+
+Function *
+cpu_create_dispatch(cpu_t *cpu)
+{
+	Function *f;
+	const FunctionType *type_func_dispatch = cast_or_null<FunctionType>(cpu->mod->getTypeByName("func.gbb"));
+
+	f = Function::Create(type_func_dispatch, GlobalValue::ExternalLinkage, "dispatch", cpu->mod);
+	f->setCallingConv(CallingConv::C);
+
+	cpu->dispatch = f;
+	return f;
+}
+
+static inline void
+_emit_dispatch_call(cpu_t *cpu, Function *f, BasicBlock *bb_dispatch, BasicBlock *bb_target)
+{
+	std::vector<Value *> params;
+	params.push_back(cpu->ptr_grf);
+	params.push_back(cpu->ptr_frf);
+	//	params.push_back(cpu->ptr_func_debug);
+	CallInst *c = CallInst::Create(f, params.begin(), params.end(), "", bb_target);
+	c->setTailCall(true);
+	BranchInst::Create(bb_dispatch, bb_target);
+}
+
+void
+cpu_populate_dispatch(cpu_t *cpu)
+{
+	Value *v_pc;
+	SwitchInst *sw;
+	BasicBlock *bb_e, *bb, *bb_ret;
+	Function *f = cpu->dispatch;
+	Function::arg_iterator args = f->arg_begin();
+	dispatch_list::const_iterator it = cpu->dispatch_entries->begin();
+
+	cpu->ptr_grf = args++;
+	cpu->ptr_grf->setName("grf");
+	cpu->ptr_frf = args++;
+	cpu->ptr_frf->setName("frf");
+
+	/* Expensive, but we cannot cache the switch instruction
+	 * itself because llvm may optimize it away. */
+	f->deleteBody();
+	bb_e = BasicBlock::Create(_CTX(), "entry", f, 0);
+	bb = BasicBlock::Create(_CTX(), "the_big_switch", f, 0);
+	BranchInst::Create(bb, bb_e);
+	v_pc  = new LoadInst(cpu->ptr_PC, "", false, bb);
+	bb_ret = create_bb_ret(cpu, f, false);
+	sw = SwitchInst::Create(v_pc, bb_ret, cpu->dispatch_entries->size(), bb);
+
+	for (; it != cpu->dispatch_entries->end(); it++) {
+		log("info: adding case: %llx\n", it->pc);
+		BasicBlock *target = create_basicblock(cpu, it->pc, cpu->dispatch, BB_TYPE_NORMAL);
+		ConstantInt* c = ConstantInt::get(getIntegerType(cpu->info.address_size), it->pc);
+
+		sw->addCase(c, target);
+		_emit_dispatch_call(cpu, cpu_get_guestbb(cpu, it->pc), bb, target);
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// JITMain function.
+//////////////////////////////////////////////////////////////////////
+
+Function *
+cpu_create_jitmain(cpu_t *cpu)
 {
 	Function *func;
-
-	// Type Definitions
-	// - struct reg
-	StructType *type_struct_reg_t = get_struct_reg(cpu);
-	cpu->mod->addTypeName("struct.reg_t", type_struct_reg_t);
-	// - struct reg *
-	PointerType *type_pstruct_reg_t = PointerType::get(type_struct_reg_t, 0);
-	// - struct fp_reg
-	StructType *type_struct_fp_reg_t = get_struct_fp_reg(cpu);
-	cpu->mod->addTypeName("struct.fp_reg_t", type_struct_fp_reg_t);
-	// - struct fp_reg *
-	PointerType *type_pstruct_fp_reg_t = PointerType::get(type_struct_fp_reg_t, 0);
-	// - uint8_t *
-	PointerType *type_pi8 = PointerType::get(getIntegerType(8), 0);
-	// - intptr *
-	PointerType *type_intptr = PointerType::get(cpu->exec_engine->getTargetData()->getIntPtrType(_CTX()), 0);
-	// - (*f)(cpu_t *) [debug_function() function pointer]
-	std::vector<const Type*>type_func_callout_args;
-	type_func_callout_args.push_back(type_intptr);	/* intptr *cpu */
-	FunctionType *type_func_callout = FunctionType::get(
-		getType(VoidTy),	/* Result */
-		type_func_callout_args,	/* Params */
-		false);		      	/* isVarArg */
-	cpu->type_pfunc_callout = PointerType::get(type_func_callout, 0);
-
-	// - (*f)(uint8_t *, reg_t *, fp_reg_t *, (*)(...)) [jitmain() function pointer)
-	std::vector<const Type*>type_func_args;
-	type_func_args.push_back(type_pi8);				/* uint8_t *RAM */
-	type_func_args.push_back(type_pstruct_reg_t);	/* reg_t *reg */
-	type_func_args.push_back(type_pstruct_fp_reg_t);	/* fp_reg_t *fp_reg */
-	type_func_args.push_back(cpu->type_pfunc_callout);	/* (*debug)(...) */
-	FunctionType* type_func = FunctionType::get(
-		getIntegerType(32),		/* Result */
-		type_func_args,		/* Params */
-		false);						/* isVarArg */
-
-	// Function Declarations
-	func = Function::Create(
-		type_func,				/* Type */
-		GlobalValue::ExternalLinkage,	/* Linkage */
-		name, cpu->mod);				/* Name */
-	func->setCallingConv(CallingConv::C);
 	AttrListPtr func_PAL;
+	PointerType *type_pi8 = PointerType::get(getIntegerType(8), 0);
+	const FunctionType *type_func_jitmain = cast_or_null<FunctionType>(cpu->mod->getTypeByName("func.jitmain"));
+
+	/* Create global RAM variable. */
+	Constant *v_RAM = ConstantExpr::getCast(Instruction::IntToPtr, ConstantInt::get(getType(Int64Ty), (uint64_t)(long)cpu->RAM), type_pi8);
+	new GlobalVariable(*cpu->mod, type_pi8, false, GlobalValue::ExternalLinkage, v_RAM, "G_RAM");
+
+	// Create jitmain Function 
+	func = Function::Create(type_func_jitmain, GlobalValue::ExternalLinkage, "jitmain", cpu->mod);
+	func->setCallingConv(CallingConv::C);
+	// Add function attributes.
 	{
 		SmallVector<AttributeWithIndex, 4> Attrs;
 		AttributeWithIndex PAWI;
@@ -291,8 +367,21 @@ cpu_create_function(cpu_t *cpu, const char *name,
 	}
 	func->setAttributes(func_PAL);
 
-	// args
+	cpu->jitmain = func;
+	return func;
+}
+
+void
+cpu_populate_jitmain(cpu_t *cpu)
+{
+  	Value *G_RAM = cpu->mod->getGlobalVariable("G_RAM");
+	Function *func = cpu->jitmain;
 	Function::arg_iterator args = func->arg_begin();
+
+	// Remove current IR if already there.
+	func->deleteBody();
+
+	// args
 	cpu->ptr_RAM = args++;
 	cpu->ptr_RAM->setName("RAM");
 	cpu->ptr_grf = args++;
@@ -302,13 +391,12 @@ cpu_create_function(cpu_t *cpu, const char *name,
 	cpu->ptr_func_debug = args++;
 	cpu->ptr_func_debug->setName("debug");
 
-	Value *G_RAM = new GlobalVariable(*cpu->mod, type_pi8, false, GlobalValue::ExternalLinkage, ConstantExpr::getCast(Instruction::IntToPtr, ConstantInt::get(getType(Int64Ty), (uint64_t)(long)cpu->RAM), type_pi8), "G_RAM");
-
 	// entry basicblock
 	BasicBlock *label_entry = BasicBlock::Create(_CTX(), "entry", func, 0);
 	new StoreInst(cpu->ptr_RAM, G_RAM, label_entry);
-	emit_decode_reg(cpu, label_entry);
-
+	emit_decode_pc(cpu, label_entry);
+	//	emit_decode_reg(cpu, label_entry);
+ 
 	// create exit code
 	Value *exit_code = new AllocaInst(getIntegerType(32), "exit_code", label_entry);
 	// assume JIT_RETURN_FUNCNOTFOUND or JIT_RETURN_SINGLESTEP if in in single step.
@@ -316,15 +404,9 @@ cpu_create_function(cpu_t *cpu, const char *name,
 					(cpu->flags_debug & (CPU_DEBUG_SINGLESTEP | CPU_DEBUG_SINGLESTEP_BB)) ? JIT_RETURN_SINGLESTEP :
 					JIT_RETURN_FUNCNOTFOUND), exit_code, false, 0, label_entry);
 
-#if 0 // bad for debugging, minimal speedup
-	/* make the RAM pointer a constant */
-	PointerType* type_pi8 = PointerType::get(IntegerType::get(8), 0);
-	cpu->ptr_RAM = ConstantExpr::getCast(Instruction::IntToPtr, ConstantInt::get(Type::Int64Ty, (uint64_t)(long)cpu->RAM), type_pi8);
-#endif
-
 	// create ret basicblock
 	BasicBlock *bb_ret = BasicBlock::Create(_CTX(), "ret", func, 0);  
-	spill_reg_state(cpu, bb_ret);
+	//	spill_reg_state(cpu, bb_ret);
 	ReturnInst::Create(_CTX(), new LoadInst(exit_code, "", false, 0, bb_ret), bb_ret);
 	// create trap return basicblock
 	BasicBlock *bb_trap = BasicBlock::Create(_CTX(), "trap", func, 0);  
@@ -332,8 +414,11 @@ cpu_create_function(cpu_t *cpu, const char *name,
 	// return
 	BranchInst::Create(bb_ret, bb_trap);
 
-	*p_bb_ret = bb_ret;
-	*p_bb_trap = bb_trap;
-	*p_label_entry = label_entry;
-	return func;
+
+	// Create Dispatch function and invoke it.
+	std::vector<Value *> params;
+	params.push_back(cpu->ptr_grf);
+	params.push_back(cpu->ptr_frf);
+	if (cpu->dispatch == NULL) cpu_create_dispatch(cpu);
+	InvokeInst::Create(cpu->dispatch, bb_ret, bb_trap, params.begin(), params.end(), "", label_entry);
 }

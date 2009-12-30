@@ -59,6 +59,112 @@ is_valid_vr_size(size_t size)
 	}
 }
 
+static StructType *
+get_struct_reg(cpu_t *cpu)
+{
+	std::vector<const Type*>type_struct_reg_t_fields;
+
+	uint32_t count, size;
+	
+	// GPRs
+	count = cpu->info.register_count[CPU_REG_GPR];
+	size  = cpu->info.register_size[CPU_REG_GPR];
+	for (uint32_t n = 0; n < count; n++)
+		type_struct_reg_t_fields.push_back(getIntegerType(size));
+
+	// XRs
+	count = cpu->info.register_count[CPU_REG_XR];
+	size  = cpu->info.register_size[CPU_REG_XR];
+	for (uint32_t n = 0; n < count; n++)
+		type_struct_reg_t_fields.push_back(getIntegerType(size));
+
+//	type_struct_reg_t_fields.push_back(getIntegerType(cpu->info.address_size)); /* PC */
+
+	return getStructType(type_struct_reg_t_fields, /*isPacked=*/true);
+}
+
+static StructType *
+get_struct_fp_reg(cpu_t *cpu)
+{
+	std::vector<const Type*>type_struct_fp_reg_t_fields;
+
+	uint32_t count, size;
+
+	count = cpu->info.register_count[CPU_REG_FPR];
+	size  = cpu->info.register_size[CPU_REG_FPR];
+	for (uint32_t n = 0; n < count; n++) {
+		if (size == 80) {
+			if ((cpu->flags & CPU_FLAG_FP80) == 0) {
+				/* two 64bits words hold the data */
+				type_struct_fp_reg_t_fields.push_back(getIntegerType(64));
+				type_struct_fp_reg_t_fields.push_back(getIntegerType(64));
+			} else {
+				// XXX ensure it is aligned to 16byte boundary!
+				type_struct_fp_reg_t_fields.push_back(getFloatType(80));
+			}
+		} else if (size == 128) {
+			if ((cpu->flags & CPU_FLAG_FP128) == 0) {
+				/* two 64bits words hold the data */
+				type_struct_fp_reg_t_fields.push_back(getIntegerType(64));
+				type_struct_fp_reg_t_fields.push_back(getIntegerType(64));
+			} else {
+				type_struct_fp_reg_t_fields.push_back(getFloatType(128));
+			}
+		} else {
+			type_struct_fp_reg_t_fields.push_back(getFloatType(size));
+		}
+	}
+
+	return getStructType(type_struct_fp_reg_t_fields, /*isPacked=*/true);
+}
+
+static FunctionType *
+get_type_func_callout(cpu_t *cpu)
+{
+	FunctionType *type_func_callout;
+	std::vector<const Type*>args;
+	PointerType *type_intptr = PointerType::get(cpu->exec_engine->getTargetData()->getIntPtrType(_CTX()), 0);
+
+	args.push_back(type_intptr);	/* intptr *cpu */
+	type_func_callout = FunctionType::get(
+		getType(VoidTy),	/* Result */
+		args,			/* Params */
+		false);		      	/* isVarArg */
+
+	return type_func_callout;
+}
+
+static FunctionType *
+get_type_func_gbb(cpu_t *cpu)
+{
+	FunctionType *type_func_gbb;
+	std::vector<const Type *> args;
+	PointerType *type_pstruct_reg_t = PointerType::get(cpu->mod->getTypeByName("struct.reg_t"), 0);
+	PointerType *type_pstruct_fp_reg_t = PointerType::get(cpu->mod->getTypeByName("struct.fp_reg_t"), 0);
+	args.push_back(type_pstruct_reg_t);	// reg_t *reg
+	args.push_back(type_pstruct_fp_reg_t);	// fp_reg_t *fp_reg */
+	//	args.push_back(cpu->type_pfunc_callout);	/* (*debug)(...) */
+	type_func_gbb = FunctionType::get(getType(VoidTy), args, false);
+	return type_func_gbb;
+}
+
+static FunctionType *
+get_type_func_jitmain(cpu_t *cpu)
+{
+	PointerType *type_pi8 = PointerType::get(getIntegerType(8), 0);
+	PointerType *type_pstruct_reg_t = PointerType::get(cpu->mod->getTypeByName("struct.reg_t"), 0);
+	PointerType *type_pstruct_fp_reg_t = PointerType::get(cpu->mod->getTypeByName("struct.fp_reg_t"), 0);
+	PointerType *type_pfunc_callout = PointerType::get(cpu->mod->getTypeByName("func.callout"), 0);
+	FunctionType *type_func_jitmain;
+	std::vector<const Type*>args;
+	args.push_back(type_pi8);			// uint8_t *RAM
+	args.push_back(type_pstruct_reg_t);		// reg_t *reg
+	args.push_back(type_pstruct_fp_reg_t);		// fp_reg_t *fp_reg
+	args.push_back(type_pfunc_callout);		// (*debug)(...)
+	type_func_jitmain = FunctionType::get(getIntegerType(32), args, false);
+	return type_func_jitmain;
+}
+
 //////////////////////////////////////////////////////////////////////
 // cpu_t
 //////////////////////////////////////////////////////////////////////
@@ -106,12 +212,10 @@ cpu_new(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags)
 	cpu->code_entry = 0;
 	cpu->tag = NULL;
 
-	uint32_t i;
-	for (i = 0; i < sizeof(cpu->func)/sizeof(*cpu->func); i++)
-		cpu->func[i] = NULL;
-	for (i = 0; i < sizeof(cpu->fp)/sizeof(*cpu->fp); i++)
-		cpu->fp[i] = NULL;
-	cpu->functions = 0;
+	cpu->fp = NULL;
+	cpu->jitmain = NULL;
+	cpu->dispatch = NULL;
+	cpu->dispatch_entries = new dispatch_list;
 
 	cpu->flags_optimize = CPU_OPTIMIZE_NONE;
 	cpu->flags_debug = CPU_DEBUG_NONE;
@@ -160,7 +264,7 @@ cpu_new(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags)
 	// init LLVM
 	cpu->mod = new Module(cpu->info.name, _CTX());
 	assert(cpu->mod != NULL);
-	cpu->exec_engine = ExecutionEngine::create(cpu->mod);
+	cpu->exec_engine = EngineBuilder(cpu->mod).create();
 	assert(cpu->exec_engine != NULL);
 
 	// check if FP80 and FP128 are supported by this architecture.
@@ -180,14 +284,17 @@ cpu_new(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags)
 			^ IS_LITTLE_ENDIAN(cpu))
 		cpu->flags |= CPU_FLAG_SWAPMEM;
 
-	// initialize bb caching map
-    // XXX: allocate cpu with new() to avoid need for this hack
-    new (&cpu->func_bb) funcbb_map();
-
 	cpu->timer_total[TIMER_TAG] = 0;
 	cpu->timer_total[TIMER_FE] = 0;
 	cpu->timer_total[TIMER_BE] = 0;
 	cpu->timer_total[TIMER_RUN] = 0;
+
+	// Save cpu-specific types.
+	cpu->mod->addTypeName("struct.reg_t", get_struct_reg(cpu));
+	cpu->mod->addTypeName("struct.fp_reg_t", get_struct_fp_reg(cpu));
+	cpu->mod->addTypeName("func.callout", get_type_func_callout(cpu));
+	cpu->mod->addTypeName("func.gbb", get_type_func_gbb(cpu));
+	cpu->mod->addTypeName("func.jitmain", get_type_func_jitmain(cpu));
 
 	return cpu;
 }
@@ -197,11 +304,13 @@ cpu_free(cpu_t *cpu)
 {
 	if (cpu->f.done != NULL)
 		cpu->f.done(cpu);
-	if (cpu->exec_engine != NULL) {
-    if (cpu->cur_func != NULL)
-      cpu->exec_engine->freeMachineCodeForFunction(cpu->cur_func);
-		delete cpu->exec_engine;
-  }
+	
+	/*XXX:
+	  if (cpu->exec_engine != NULL) {
+	  XXX:    if (cpu->cur_func != NULL)
+	  cpu->exec_engine->freeMachineCodeForFunction(cpu->cur_func);
+	  delete cpu->exec_engine;
+	  } */
 	if (cpu->in_ptr_fpr != NULL)
 		free(cpu->in_ptr_fpr);
 	if (cpu->ptr_fpr != NULL)
@@ -252,25 +361,25 @@ cpu_tag(cpu_t *cpu, addr_t pc)
 static void
 cpu_translate_function(cpu_t *cpu)
 {
-	BasicBlock *bb_ret, *bb_trap, *label_entry, *bb_start;
-
-	/* create function and fill it with std basic blocks */
-	cpu->cur_func = cpu_create_function(cpu, "jitmain", &bb_ret, &bb_trap, &label_entry);
-	cpu->func[cpu->functions] = cpu->cur_func;
+	/* create jitmain function and fill it with std basic blocks */
+	if (cpu->jitmain == NULL)
+		cpu_create_jitmain(cpu);
 
 	/* TRANSLATE! */
 	update_timing(cpu, TIMER_FE, true);
+#if 0
 	if (cpu->flags_debug & CPU_DEBUG_SINGLESTEP) {
 		bb_start = cpu_translate_singlestep(cpu, bb_ret, bb_trap);
 	} else if (cpu->flags_debug & CPU_DEBUG_SINGLESTEP_BB) {
 		bb_start = cpu_translate_singlestep_bb(cpu, bb_ret, bb_trap);
 	} else {
-		bb_start = cpu_translate_all(cpu, bb_ret, bb_trap);
+		bb_start = cpu_translate_all(cpu);
 	}
-	update_timing(cpu, TIMER_FE, false);
+#endif
 
-	/* finish entry basicblock */
-	BranchInst::Create(bb_start, label_entry);
+	cpu_translate_all(cpu);
+
+	update_timing(cpu, TIMER_FE, false);
 
 	/* make sure everything is OK */
 	verifyModule(*cpu->mod, PrintMessageAction);
@@ -288,11 +397,13 @@ cpu_translate_function(cpu_t *cpu)
 
 	log("*** Translating...");
 	update_timing(cpu, TIMER_BE, true);
-	cpu->fp[cpu->functions] = cpu->exec_engine->getPointerToFunction(cpu->cur_func);
+	//	cpu->exec_engine->freeMachineCodeForFunction(cpu->dispatch);
+	//	cpu->exec_engine->freeMachineCodeForFunction(cpu->jitmain);
+	cpu->exec_engine->recompileAndRelinkFunction(cpu->dispatch);
+	cpu->fp = cpu->exec_engine->recompileAndRelinkFunction(cpu->jitmain);
+	//cpu->fp = cpu->exec_engine->getPointerToFunction(cpu->jitmain);
 	update_timing(cpu, TIMER_BE, false);
 	log("done.\n");
-
-	cpu->functions++;
 }
 
 /* forces ahead of time translation (e.g. for benchmarking the run) */
@@ -300,9 +411,9 @@ void
 cpu_translate(cpu_t *cpu)
 {
 	/* on demand translation */
-	if (cpu->tags_dirty)
+	if (cpu->tags_dirty) {
 		cpu_translate_function(cpu);
-
+	}
 	cpu->tags_dirty = false;
 }
 
@@ -321,7 +432,6 @@ int
 cpu_run(cpu_t *cpu, debug_function_t debug_function)
 {
 	addr_t pc, orig_pc = 0;
-	uint32_t i;
 	int ret;
 	bool success;
 	bool do_translate = true;
@@ -335,26 +445,21 @@ cpu_run(cpu_t *cpu, debug_function_t debug_function)
 
 		orig_pc = pc;
 		success = false;
-		for (i = 0; i < cpu->functions; i++) {
-			fp_t FP = (fp_t)cpu->fp[i];
-			update_timing(cpu, TIMER_RUN, true);
-			breakpoint();
-			ret = FP(cpu->RAM, cpu->rf.grf, cpu->rf.frf, debug_function);
-			update_timing(cpu, TIMER_RUN, false);
-			pc = cpu->f.get_pc(cpu, cpu->rf.grf);
-			if (ret != JIT_RETURN_FUNCNOTFOUND)
-				return ret;
-			if (!is_inside_code_area(cpu, pc))
-				return ret;
-			if (pc != orig_pc) {
-				success = true;
-				break;
-			}
+		fp_t FP = (fp_t)cpu->fp;
+		update_timing(cpu, TIMER_RUN, true);
+		breakpoint();
+		ret = FP(cpu->RAM, cpu->rf.grf, cpu->rf.frf, debug_function);
+		update_timing(cpu, TIMER_RUN, false);
+		pc = cpu->f.get_pc(cpu, cpu->rf.grf);
+		if (ret != JIT_RETURN_FUNCNOTFOUND)
+			return ret;
+		if (!is_inside_code_area(cpu, pc))
+			return ret;
+		if (pc != orig_pc) {
+			success = true;
 		}
 		if (!success) {
-			fprintf(stderr, "{%llx}", pc);
 			cpu_tag(cpu, pc);
-			do_translate = true;
 		}
 	}
 }
@@ -363,13 +468,8 @@ cpu_run(cpu_t *cpu, debug_function_t debug_function)
 void
 cpu_flush(cpu_t *cpu)
 {
-	cpu->exec_engine->freeMachineCodeForFunction(cpu->cur_func);
-	cpu->cur_func->eraseFromParent();
-
-	cpu->functions = 0;
-
-	// reset bb caching mapping
-	cpu->func_bb.clear();
+  //XXX: dropAllReferences?	cpu->exec_engine->freeMachineCodeForFunction(cpu->cur_func);
+  //XXX:	cpu->cur_func->eraseFromParent();
 
 //	delete cpu->mod;
 //	cpu->mod = NULL;

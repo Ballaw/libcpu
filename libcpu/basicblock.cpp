@@ -50,27 +50,9 @@ BasicBlock *
 create_basicblock(cpu_t *cpu, addr_t addr, Function *f, uint8_t bb_type) {
 	char label[17];
 	snprintf(label, sizeof(label), "%c%08llx", bb_type, (unsigned long long)addr);
-log("creating basic block %s\n", label);
+	log("creating basic block %s\n", label);
 	BasicBlock *bb = BasicBlock::Create(_CTX(), label, f, 0);
-
-	// if it's a label, cache the new basic block.
-	if (bb_type == BB_TYPE_NORMAL)
-		cpu->func_bb[f][addr] = bb;
 
 	return bb;
 }
 
-const BasicBlock *
-lookup_basicblock(cpu_t *cpu, Function* f, addr_t pc, BasicBlock *bb_ret, uint8_t bb_type) {
-	// lookup for the basicblock associated to pc in specified function 'f'
-	bbaddr_map &bb_addr = cpu->func_bb[f];
-	bbaddr_map::const_iterator i = bb_addr.find(pc);
-	if (i != bb_addr.end())
-		return i->second;
-
-	log("basic block %c%08llx not found in function %p - creating return basic block!\n", bb_type, pc, f);
-	BasicBlock *new_bb = create_basicblock(cpu, pc, cpu->cur_func, BB_TYPE_EXTERNAL);
-	emit_store_pc_return(cpu, new_bb, pc, bb_ret);
-
-	return new_bb;
-}

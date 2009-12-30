@@ -1,5 +1,7 @@
 FIFO order.
 
-- invoke in dispatch basic block to let unwind actually work.
-- support multiple functions (this makes current branch very broken)
+- Fix embarassing performances on dynamic compilation.
+- fix cpu destruction. Check for leaks. I'm looking at you, reocmpileAndRelink...
+- fix debug upcall.
+- fix single step.
 - just because I'm italian doesn't mean I can keep this spaghetti code. [Clean it up!]

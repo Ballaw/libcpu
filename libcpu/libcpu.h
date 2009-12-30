@@ -33,6 +33,14 @@
 
 using namespace llvm;
 
+#include <list>
+typedef struct {
+	addr_t pc;
+	Function *func;
+} dispatch_entry_t;
+typedef std::list<dispatch_entry_t> dispatch_list;
+
+
 struct cpu;
 typedef void        (*fp_init)(struct cpu *cpu, struct cpu_archinfo *info, struct cpu_archrf *rf);
 typedef void        (*fp_done)(struct cpu *cpu);
@@ -139,15 +147,10 @@ typedef struct cpu_archrf {
 	void *vrf; // Vector register file
 } cpu_archrf_t;
 
-typedef std::map<addr_t, BasicBlock *> bbaddr_map;
-typedef std::map<Function *, bbaddr_map> funcbb_map;
-
 typedef struct cpu {
 	cpu_archinfo_t info;
 	cpu_archrf_t rf;
 	arch_func_t f;
-
-	funcbb_map func_bb; // faster bb lookup
 
 	uint16_t pc_offset;
 	addr_t code_start;
@@ -162,10 +165,12 @@ typedef struct cpu {
 	tag_t *tag;
 	bool tags_dirty;
 	Module *mod;
-	void *fp[1024];
-	Function *func[1024];
-	Function *cur_func;
-	uint32_t functions;
+
+	void *fp;
+	Function *jitmain;
+	Function *dispatch;
+	dispatch_list *dispatch_entries;
+
 	ExecutionEngine *exec_engine;
 	uint8_t *RAM;
 	Value *ptr_PC;

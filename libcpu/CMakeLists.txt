@@ -7,8 +7,8 @@ ADD_LIBRARY(cpu SHARED
 			function.cpp
 			translate.cpp
 			translate_all.cpp
-			translate_singlestep.cpp
-			translate_singlestep_bb.cpp
+#			translate_singlestep.cpp
+#			translate_singlestep_bb.cpp
 			tag.cpp
 			optimize.cpp
 			fp.cpp
