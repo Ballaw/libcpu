@@ -55,7 +55,6 @@ cpu_translate_all(cpu_t *cpu)
 		}
 	}
 
-	cpu_populate_jitmain(cpu);
 	cpu_populate_dispatch(cpu);
 	
 	// translate all new guest basic blocks.

@@ -167,7 +167,7 @@ typedef struct cpu {
 	Module *mod;
 
 	void *fp;
-	Function *jitmain;
+	Function *trampoline;
 	Function *dispatch;
 	dispatch_list *dispatch_entries;
 

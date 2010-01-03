@@ -149,20 +149,19 @@ get_type_func_gbb(cpu_t *cpu)
 }
 
 static FunctionType *
-get_type_func_jitmain(cpu_t *cpu)
+get_type_func_trampoline(cpu_t *cpu)
 {
-	PointerType *type_pi8 = PointerType::get(getIntegerType(8), 0);
+	PointerType *type_pfunc_gbb = PointerType::get(cpu->mod->getTypeByName("func.gbb"), 0);
 	PointerType *type_pstruct_reg_t = PointerType::get(cpu->mod->getTypeByName("struct.reg_t"), 0);
 	PointerType *type_pstruct_fp_reg_t = PointerType::get(cpu->mod->getTypeByName("struct.fp_reg_t"), 0);
 	PointerType *type_pfunc_callout = PointerType::get(cpu->mod->getTypeByName("func.callout"), 0);
-	FunctionType *type_func_jitmain;
+
 	std::vector<const Type*>args;
-	args.push_back(type_pi8);			// uint8_t *RAM
+	args.push_back(type_pfunc_gbb);			// (*gbb)(...)
 	args.push_back(type_pstruct_reg_t);		// reg_t *reg
 	args.push_back(type_pstruct_fp_reg_t);		// fp_reg_t *fp_reg
 	args.push_back(type_pfunc_callout);		// (*debug)(...)
-	type_func_jitmain = FunctionType::get(getIntegerType(32), args, false);
-	return type_func_jitmain;
+	return FunctionType::get(getIntegerType(32), args, false);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -213,7 +212,7 @@ cpu_new(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags)
 	cpu->tag = NULL;
 
 	cpu->fp = NULL;
-	cpu->jitmain = NULL;
+	cpu->trampoline = NULL;
 	cpu->dispatch = NULL;
 	cpu->dispatch_entries = new dispatch_list;
 
@@ -294,7 +293,7 @@ cpu_new(cpu_arch_t arch, uint32_t flags, uint32_t arch_flags)
 	cpu->mod->addTypeName("struct.fp_reg_t", get_struct_fp_reg(cpu));
 	cpu->mod->addTypeName("func.callout", get_type_func_callout(cpu));
 	cpu->mod->addTypeName("func.gbb", get_type_func_gbb(cpu));
-	cpu->mod->addTypeName("func.jitmain", get_type_func_jitmain(cpu));
+	cpu->mod->addTypeName("func.trampoline", get_type_func_trampoline(cpu));
 
 	return cpu;
 }
@@ -361,9 +360,12 @@ cpu_tag(cpu_t *cpu, addr_t pc)
 static void
 cpu_translate_function(cpu_t *cpu)
 {
-	/* create jitmain function and fill it with std basic blocks */
-	if (cpu->jitmain == NULL)
-		cpu_create_jitmain(cpu);
+	if (cpu->trampoline == NULL) {
+		// First time run. Initialize
+		cpu_create_ram(cpu);
+		cpu_create_trampoline(cpu);
+		cpu_create_dispatch(cpu);
+	}
 
 	/* TRANSLATE! */
 	update_timing(cpu, TIMER_FE, true);
@@ -397,11 +399,8 @@ cpu_translate_function(cpu_t *cpu)
 
 	log("*** Translating...");
 	update_timing(cpu, TIMER_BE, true);
-	//	cpu->exec_engine->freeMachineCodeForFunction(cpu->dispatch);
-	//	cpu->exec_engine->freeMachineCodeForFunction(cpu->jitmain);
 	cpu->exec_engine->recompileAndRelinkFunction(cpu->dispatch);
-	cpu->fp = cpu->exec_engine->recompileAndRelinkFunction(cpu->jitmain);
-	//cpu->fp = cpu->exec_engine->getPointerToFunction(cpu->jitmain);
+	cpu->fp = cpu->exec_engine->recompileAndRelinkFunction(cpu->trampoline);
 	update_timing(cpu, TIMER_BE, false);
 	log("done.\n");
 }
@@ -417,7 +416,7 @@ cpu_translate(cpu_t *cpu)
 	cpu->tags_dirty = false;
 }
 
-typedef int (*fp_t)(uint8_t *RAM, void *grf, void *frf, debug_function_t fp);
+typedef int (*fp_t)(void *f, void *grf, void *frf, debug_function_t fp);
 
 #ifdef __GNUC__
 void __attribute__((noinline))
@@ -448,7 +447,7 @@ cpu_run(cpu_t *cpu, debug_function_t debug_function)
 		fp_t FP = (fp_t)cpu->fp;
 		update_timing(cpu, TIMER_RUN, true);
 		breakpoint();
-		ret = FP(cpu->RAM, cpu->rf.grf, cpu->rf.frf, debug_function);
+		ret = FP(cpu->exec_engine->getPointerToFunction(cpu->dispatch), cpu->rf.grf, cpu->rf.frf, debug_function);
 		update_timing(cpu, TIMER_RUN, false);
 		pc = cpu->f.get_pc(cpu, cpu->rf.grf);
 		if (ret != JIT_RETURN_FUNCNOTFOUND)

@@ -322,6 +322,7 @@ cpu_populate_dispatch(cpu_t *cpu)
 	bb_e = BasicBlock::Create(_CTX(), "entry", f, 0);
 	bb = BasicBlock::Create(_CTX(), "the_big_switch", f, 0);
 	BranchInst::Create(bb, bb_e);
+	emit_decode_pc(cpu, bb);
 	v_pc  = new LoadInst(cpu->ptr_PC, "", false, bb);
 	bb_ret = create_bb_ret(cpu, f, false);
 	sw = SwitchInst::Create(v_pc, bb_ret, cpu->dispatch_entries->size(), bb);
@@ -337,23 +338,33 @@ cpu_populate_dispatch(cpu_t *cpu)
 }
 
 //////////////////////////////////////////////////////////////////////
-// JITMain function.
+// Global Variables.
+//////////////////////////////////////////////////////////////////////
+
+// XXX: We can add more global variables.
+
+void
+cpu_create_ram(cpu_t *cpu)
+{
+	/* Create global RAM variable. */
+	PointerType *type_pi8 = PointerType::get(getIntegerType(8), 0);
+	Constant *v_RAM = ConstantExpr::getCast(Instruction::IntToPtr, ConstantInt::get(getType(Int64Ty), (uint64_t)(long)cpu->RAM), type_pi8);
+	new GlobalVariable(*cpu->mod, type_pi8, false, GlobalValue::ExternalLinkage, v_RAM, "G_RAM");
+}
+
+//////////////////////////////////////////////////////////////////////
+// Trampoline function.
 //////////////////////////////////////////////////////////////////////
 
 Function *
-cpu_create_jitmain(cpu_t *cpu)
+cpu_create_trampoline(cpu_t *cpu)
 {
 	Function *func;
 	AttrListPtr func_PAL;
-	PointerType *type_pi8 = PointerType::get(getIntegerType(8), 0);
-	const FunctionType *type_func_jitmain = cast_or_null<FunctionType>(cpu->mod->getTypeByName("func.jitmain"));
+	const FunctionType *type_func_trampoline = cast_or_null<FunctionType>(cpu->mod->getTypeByName("func.trampoline"));
 
-	/* Create global RAM variable. */
-	Constant *v_RAM = ConstantExpr::getCast(Instruction::IntToPtr, ConstantInt::get(getType(Int64Ty), (uint64_t)(long)cpu->RAM), type_pi8);
-	new GlobalVariable(*cpu->mod, type_pi8, false, GlobalValue::ExternalLinkage, v_RAM, "G_RAM");
-
-	// Create jitmain Function 
-	func = Function::Create(type_func_jitmain, GlobalValue::ExternalLinkage, "jitmain", cpu->mod);
+	// Create trampoline Function 
+	func = Function::Create(type_func_trampoline, GlobalValue::ExternalLinkage, "trampoline", cpu->mod);
 	func->setCallingConv(CallingConv::C);
 	// Add function attributes.
 	{
@@ -367,58 +378,46 @@ cpu_create_jitmain(cpu_t *cpu)
 	}
 	func->setAttributes(func_PAL);
 
-	cpu->jitmain = func;
-	return func;
-}
-
-void
-cpu_populate_jitmain(cpu_t *cpu)
-{
-  	Value *G_RAM = cpu->mod->getGlobalVariable("G_RAM");
-	Function *func = cpu->jitmain;
 	Function::arg_iterator args = func->arg_begin();
+	Value *callee = args++;
+	callee->setName("callee");
+	Value *grf = args++;
+	grf->setName("grf");
+	Value *frf = args++;
+	frf->setName("frf");
+	Value *func_debug = args++;
+       	func_debug->setName("debug");
 
-	// Remove current IR if already there.
-	func->deleteBody();
-
-	// args
-	cpu->ptr_RAM = args++;
-	cpu->ptr_RAM->setName("RAM");
-	cpu->ptr_grf = args++;
-	cpu->ptr_grf->setName("grf");
-	cpu->ptr_frf = args++;
-	cpu->ptr_frf->setName("frf");
-	cpu->ptr_func_debug = args++;
-	cpu->ptr_func_debug->setName("debug");
+	// Invoke function.
+	std::vector<Value *> params;
+	params.push_back(grf);
+	params.push_back(frf);
 
 	// entry basicblock
-	BasicBlock *label_entry = BasicBlock::Create(_CTX(), "entry", func, 0);
-	new StoreInst(cpu->ptr_RAM, G_RAM, label_entry);
-	emit_decode_pc(cpu, label_entry);
-	//	emit_decode_reg(cpu, label_entry);
- 
+	BasicBlock *entry = BasicBlock::Create(_CTX(), "entry", func, 0);
+
 	// create exit code
-	Value *exit_code = new AllocaInst(getIntegerType(32), "exit_code", label_entry);
+	Value *exit_code = new AllocaInst(getIntegerType(32), "exit_code", entry);
 	// assume JIT_RETURN_FUNCNOTFOUND or JIT_RETURN_SINGLESTEP if in in single step.
 	new StoreInst(ConstantInt::get(getType(Int32Ty),
 					(cpu->flags_debug & (CPU_DEBUG_SINGLESTEP | CPU_DEBUG_SINGLESTEP_BB)) ? JIT_RETURN_SINGLESTEP :
-					JIT_RETURN_FUNCNOTFOUND), exit_code, false, 0, label_entry);
+					JIT_RETURN_FUNCNOTFOUND), exit_code, false, 0, entry);
 
 	// create ret basicblock
 	BasicBlock *bb_ret = BasicBlock::Create(_CTX(), "ret", func, 0);  
-	//	spill_reg_state(cpu, bb_ret);
 	ReturnInst::Create(_CTX(), new LoadInst(exit_code, "", false, 0, bb_ret), bb_ret);
+
 	// create trap return basicblock
 	BasicBlock *bb_trap = BasicBlock::Create(_CTX(), "trap", func, 0);  
 	new StoreInst(ConstantInt::get(getType(Int32Ty), JIT_RETURN_TRAP), exit_code, false, 0, bb_trap);
-	// return
 	BranchInst::Create(bb_ret, bb_trap);
 
+	// Invoke function
+	InvokeInst::Create(callee, bb_ret, bb_trap, params.begin(), params.end(), "", entry);
+	//CallInst::Create(callee, params.begin(), params.end(), "", entry);
+	//	BranchInst::Create(bb_ret, entry);
 
-	// Create Dispatch function and invoke it.
-	std::vector<Value *> params;
-	params.push_back(cpu->ptr_grf);
-	params.push_back(cpu->ptr_frf);
-	if (cpu->dispatch == NULL) cpu_create_dispatch(cpu);
-	InvokeInst::Create(cpu->dispatch, bb_ret, bb_trap, params.begin(), params.end(), "", label_entry);
+
+	cpu->trampoline = func;
+	return func;
 }
